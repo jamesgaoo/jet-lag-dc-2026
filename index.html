@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jet Lag DC 2026 — Zone Detector</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f0f0f;
+      color: #fff;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #header {
+      background: #1a1a2e;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 2px solid #16213e;
+      z-index: 1000;
+      flex-shrink: 0;
+    }
+
+    #header h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: #e94560;
+    }
+
+    #header h1 span {
+      color: #fff;
+      font-weight: 400;
+    }
+
+    #locate-btn {
+      background: #e94560;
+      color: #fff;
+      border: none;
+      padding: 8px 18px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    #locate-btn:hover { background: #c73652; }
+    #locate-btn:disabled { background: #555; cursor: not-allowed; }
+
+    #zone-banner {
+      background: #16213e;
+      padding: 14px 20px;
+      text-align: center;
+      flex-shrink: 0;
+      z-index: 1000;
+      border-bottom: 1px solid #1a1a3e;
+      transition: background 0.3s;
+    }
+
+    #zone-banner.detected {
+      background: #1a3a2e;
+    }
+
+    #zone-banner .label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: #888;
+      margin-bottom: 4px;
+    }
+
+    #zone-banner .zone-name {
+      font-size: 1.6rem;
+      font-weight: 800;
+      letter-spacing: 1px;
+    }
+
+    #zone-banner .zone-name.unknown {
+      color: #666;
+      font-style: italic;
+      font-weight: 400;
+      font-size: 1rem;
+    }
+
+    #zone-banner .coords {
+      font-size: 0.7rem;
+      color: #666;
+      margin-top: 2px;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+    }
+
+    #map {
+      flex: 1;
+      z-index: 1;
+    }
+
+    .leaflet-popup-content-wrapper {
+      background: #1a1a2e;
+      color: #fff;
+      border-radius: 8px;
+    }
+
+    .leaflet-popup-tip { background: #1a1a2e; }
+
+    .leaflet-popup-content {
+      margin: 10px 14px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+
+    .zone-popup-name {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 2px;
+    }
+
+    .zone-popup-hint {
+      font-size: 0.75rem;
+      color: #888;
+    }
+
+    #instructions {
+      position: absolute;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(26, 26, 46, 0.92);
+      backdrop-filter: blur(8px);
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      color: #aaa;
+      z-index: 1000;
+      pointer-events: none;
+      text-align: center;
+      max-width: 90vw;
+    }
+
+    @media (max-width: 600px) {
+      #header { padding: 10px 14px; }
+      #header h1 { font-size: 0.9rem; }
+      #locate-btn { padding: 7px 14px; font-size: 0.8rem; }
+      #zone-banner .zone-name { font-size: 1.3rem; }
+    }
+  </style>
+</head>
+<body>
+  <div id="header">
+    <h1>Jet Lag <span>DC 2026</span></h1>
+    <button id="locate-btn" onclick="locateUser()">Find My Zone</button>
+  </div>
+  <div id="zone-banner">
+    <div class="label">Current Zone</div>
+    <div class="zone-name unknown" id="zone-name">Tap "Find My Zone" or click the map</div>
+    <div class="coords" id="zone-coords"></div>
+  </div>
+  <div id="map"></div>
+  <div id="instructions">Tap the map to check any location &middot; Use the button to detect your GPS position</div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/@turf/turf@7/turf.min.js"></script>
+  <script>
+    // ── Zone Definitions ──────────────────────────────────────────────
+    // Each zone is a polygon defined by [lng, lat] vertices tracing DC roads.
+    // Coordinates are approximate, using major streets as boundaries.
+
+    const ZONES = [
+      {
+        name: "Georgetown",
+        color: "#e6194b",
+        coords: [
+          [-77.0735, 38.9160],
+          [-77.0595, 38.9160],
+          [-77.0530, 38.9130],
+          [-77.0500, 38.9110],
+          [-77.0500, 38.9060],
+          [-77.0505, 38.9030],
+          [-77.0545, 38.8990],
+          [-77.0615, 38.8960],
+          [-77.0735, 38.8960],
+        ]
+      },
+      {
+        name: "Foggy Bottom",
+        color: "#f58231",
+        coords: [
+          [-77.0505, 38.9030],
+          [-77.0500, 38.9060],
+          [-77.0500, 38.9070],
+          [-77.0440, 38.9070],
+          [-77.0395, 38.9060],
+          [-77.0395, 38.9020],
+          [-77.0395, 38.8985],
+          [-77.0395, 38.8960],
+          [-77.0425, 38.8940],
+          [-77.0460, 38.8930],
+          [-77.0505, 38.8930],
+          [-77.0545, 38.8990],
+        ]
+      },
+      {
+        name: "West End",
+        color: "#ffe119",
+        coords: [
+          [-77.0500, 38.9110],
+          [-77.0500, 38.9070],
+          [-77.0440, 38.9070],
+          [-77.0395, 38.9060],
+          [-77.0395, 38.9090],
+          [-77.0420, 38.9110],
+          [-77.0435, 38.9130],
+        ]
+      },
+      {
+        name: "Kalorama",
+        color: "#bfef45",
+        coords: [
+          [-77.0530, 38.9200],
+          [-77.0500, 38.9200],
+          [-77.0470, 38.9200],
+          [-77.0440, 38.9190],
+          [-77.0435, 38.9170],
+          [-77.0435, 38.9130],
+          [-77.0500, 38.9110],
+          [-77.0530, 38.9130],
+        ]
+      },
+      {
+        name: "Adams Morgan",
+        color: "#42d4f4",
+        coords: [
+          [-77.0530, 38.9260],
+          [-77.0435, 38.9260],
+          [-77.0420, 38.9240],
+          [-77.0400, 38.9200],
+          [-77.0435, 38.9190],
+          [-77.0440, 38.9190],
+          [-77.0470, 38.9200],
+          [-77.0500, 38.9200],
+          [-77.0530, 38.9200],
+        ]
+      },
+      {
+        name: "Mt Pleasant",
+        color: "#4363d8",
+        coords: [
+          [-77.0530, 38.9370],
+          [-77.0370, 38.9370],
+          [-77.0370, 38.9260],
+          [-77.0390, 38.9240],
+          [-77.0400, 38.9200],
+          [-77.0420, 38.9240],
+          [-77.0435, 38.9260],
+          [-77.0530, 38.9260],
+        ]
+      },
+      {
+        name: "Columbia Heights",
+        color: "#911eb4",
+        coords: [
+          [-77.0370, 38.9370],
+          [-77.0240, 38.9370],
+          [-77.0240, 38.9290],
+          [-77.0270, 38.9240],
+          [-77.0270, 38.9195],
+          [-77.0320, 38.9180],
+          [-77.0370, 38.9175],
+          [-77.0370, 38.9260],
+        ]
+      },
+      {
+        name: "Dupont Circle",
+        color: "#f032e6",
+        coords: [
+          [-77.0435, 38.9170],
+          [-77.0435, 38.9130],
+          [-77.0420, 38.9110],
+          [-77.0395, 38.9090],
+          [-77.0370, 38.9090],
+          [-77.0325, 38.9090],
+          [-77.0325, 38.9130],
+          [-77.0325, 38.9170],
+          [-77.0370, 38.9175],
+        ]
+      },
+      {
+        name: "U Street Corridor",
+        color: "#fabebe",
+        coords: [
+          [-77.0370, 38.9175],
+          [-77.0320, 38.9180],
+          [-77.0270, 38.9195],
+          [-77.0240, 38.9195],
+          [-77.0240, 38.9170],
+          [-77.0240, 38.9130],
+          [-77.0325, 38.9130],
+          [-77.0325, 38.9170],
+        ]
+      },
+      {
+        name: "Logan Circle",
+        color: "#9A6324",
+        coords: [
+          [-77.0395, 38.9090],
+          [-77.0370, 38.9090],
+          [-77.0325, 38.9090],
+          [-77.0325, 38.9130],
+          [-77.0240, 38.9130],
+          [-77.0240, 38.9060],
+          [-77.0240, 38.9020],
+          [-77.0325, 38.9020],
+          [-77.0395, 38.9020],
+        ]
+      },
+      {
+        name: "Shaw",
+        color: "#800000",
+        coords: [
+          [-77.0240, 38.9195],
+          [-77.0240, 38.9290],
+          [-77.0185, 38.9230],
+          [-77.0150, 38.9200],
+          [-77.0120, 38.9175],
+          [-77.0120, 38.9130],
+          [-77.0150, 38.9130],
+          [-77.0240, 38.9130],
+          [-77.0240, 38.9170],
+        ]
+      },
+      {
+        name: "Bloomingdale",
+        color: "#469990",
+        coords: [
+          [-77.0240, 38.9370],
+          [-77.0100, 38.9370],
+          [-77.0100, 38.9260],
+          [-77.0100, 38.9200],
+          [-77.0120, 38.9175],
+          [-77.0150, 38.9200],
+          [-77.0185, 38.9230],
+          [-77.0240, 38.9290],
+        ]
+      },
+      {
+        name: "Truxton Circle",
+        color: "#dcbeff",
+        coords: [
+          [-77.0120, 38.9175],
+          [-77.0100, 38.9200],
+          [-77.0100, 38.9130],
+          [-77.0120, 38.9130],
+        ]
+      },
+      {
+        name: "Downtown",
+        color: "#aaffc3",
+        coords: [
+          [-77.0395, 38.9020],
+          [-77.0325, 38.9020],
+          [-77.0240, 38.9020],
+          [-77.0240, 38.9060],
+          [-77.0240, 38.8990],
+          [-77.0240, 38.8960],
+          [-77.0340, 38.8960],
+          [-77.0395, 38.8960],
+        ]
+      },
+      {
+        name: "Mt Vernon Square",
+        color: "#ffd8b1",
+        coords: [
+          [-77.0240, 38.9060],
+          [-77.0240, 38.9130],
+          [-77.0150, 38.9130],
+          [-77.0120, 38.9130],
+          [-77.0100, 38.9130],
+          [-77.0100, 38.9060],
+          [-77.0100, 38.9020],
+          [-77.0180, 38.9020],
+          [-77.0240, 38.8990],
+        ]
+      },
+      {
+        name: "NoMa",
+        color: "#000075",
+        coords: [
+          [-77.0100, 38.9130],
+          [-77.0100, 38.9200],
+          [-77.0100, 38.9260],
+          [-77.0030, 38.9260],
+          [-77.0030, 38.9070],
+          [-77.0060, 38.9030],
+          [-77.0100, 38.9020],
+          [-77.0100, 38.9060],
+        ]
+      },
+      {
+        name: "Penn Quarter",
+        color: "#a9a9a9",
+        coords: [
+          [-77.0340, 38.8960],
+          [-77.0240, 38.8960],
+          [-77.0240, 38.8990],
+          [-77.0180, 38.9020],
+          [-77.0100, 38.9020],
+          [-77.0100, 38.8970],
+          [-77.0100, 38.8940],
+          [-77.0170, 38.8940],
+          [-77.0270, 38.8940],
+          [-77.0340, 38.8930],
+        ]
+      },
+      {
+        name: "Federal Triangle",
+        color: "#fffac8",
+        coords: [
+          [-77.0395, 38.8960],
+          [-77.0340, 38.8960],
+          [-77.0340, 38.8930],
+          [-77.0270, 38.8940],
+          [-77.0170, 38.8940],
+          [-77.0100, 38.8940],
+          [-77.0100, 38.8930],
+          [-77.0145, 38.8930],
+          [-77.0395, 38.8930],
+        ]
+      },
+      {
+        name: "Atlas District",
+        color: "#e6beff",
+        coords: [
+          [-77.0030, 38.9070],
+          [-77.0030, 38.9260],
+          [-76.9900, 38.9260],
+          [-76.9900, 38.9070],
+        ]
+      },
+      {
+        name: "Capitol Hill",
+        color: "#3cb44b",
+        coords: [
+          [-77.0100, 38.8930],
+          [-77.0100, 38.8940],
+          [-77.0100, 38.8970],
+          [-77.0100, 38.9020],
+          [-77.0060, 38.9030],
+          [-77.0030, 38.9070],
+          [-76.9900, 38.9070],
+          [-76.9900, 38.8830],
+          [-77.0000, 38.8830],
+          [-77.0050, 38.8830],
+          [-77.0050, 38.8870],
+          [-77.0100, 38.8870],
+        ]
+      },
+      {
+        name: "National Mall",
+        color: "#ffffff",
+        coords: [
+          [-77.0505, 38.8930],
+          [-77.0460, 38.8930],
+          [-77.0425, 38.8940],
+          [-77.0395, 38.8960],
+          [-77.0395, 38.8930],
+          [-77.0145, 38.8930],
+          [-77.0100, 38.8930],
+          [-77.0100, 38.8870],
+          [-77.0050, 38.8870],
+          [-77.0050, 38.8830],
+          [-77.0100, 38.8830],
+          [-77.0150, 38.8830],
+          [-77.0250, 38.8830],
+          [-77.0380, 38.8830],
+          [-77.0460, 38.8830],
+          [-77.0505, 38.8850],
+        ]
+      },
+      {
+        name: "Southwest Waterfront",
+        color: "#808000",
+        coords: [
+          [-77.0380, 38.8830],
+          [-77.0250, 38.8830],
+          [-77.0150, 38.8830],
+          [-77.0150, 38.8750],
+          [-77.0200, 38.8710],
+          [-77.0300, 38.8710],
+          [-77.0380, 38.8750],
+        ]
+      },
+      {
+        name: "Navy Yard",
+        color: "#f032e6",
+        coords: [
+          [-77.0150, 38.8830],
+          [-77.0100, 38.8830],
+          [-77.0000, 38.8830],
+          [-76.9900, 38.8830],
+          [-76.9900, 38.8710],
+          [-77.0000, 38.8710],
+          [-77.0150, 38.8750],
+        ]
+      },
+    ];
+
+    // ── Map Setup ───────────────────────────────────────────────────
+    const map = L.map('map', {
+      center: [38.9072, -77.0369],
+      zoom: 14,
+      zoomControl: true,
+    });
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+      maxZoom: 19,
+    }).addTo(map);
+
+    // ── Draw Zones ──────────────────────────────────────────────────
+    const zoneLayerGroup = L.layerGroup().addTo(map);
+    const zoneTurfPolygons = [];
+
+    ZONES.forEach((zone) => {
+      const latLngs = zone.coords.map(c => [c[1], c[0]]);
+      const polygon = L.polygon(latLngs, {
+        color: zone.color,
+        weight: 2,
+        fillColor: zone.color,
+        fillOpacity: 0.25,
+        className: 'zone-polygon',
+      }).addTo(zoneLayerGroup);
+
+      polygon.bindPopup(
+        `<div class="zone-popup-name" style="color:${zone.color}">${zone.name}</div>` +
+        `<div class="zone-popup-hint">Click map to check zone</div>`
+      );
+
+      // Build turf polygon for point-in-polygon tests
+      // Close the ring by repeating the first coordinate
+      const ring = [...zone.coords, zone.coords[0]];
+      const turfPoly = turf.polygon([ring]);
+      zoneTurfPolygons.push({ name: zone.name, color: zone.color, polygon: turfPoly });
+    });
+
+    // ── Zone Detection ──────────────────────────────────────────────
+    let userMarker = null;
+
+    function detectZone(lat, lng) {
+      const pt = turf.point([lng, lat]);
+      for (const z of zoneTurfPolygons) {
+        if (turf.booleanPointInPolygon(pt, z.polygon)) {
+          return z;
+        }
+      }
+      // If not in any zone, find the nearest zone
+      let minDist = Infinity;
+      let nearest = null;
+      for (const z of zoneTurfPolygons) {
+        const dist = turf.pointToPolygonDistance(pt, z.polygon);
+        if (dist < minDist) {
+          minDist = dist;
+          nearest = z;
+        }
+      }
+      // Only return nearest if within 0.5km
+      if (nearest && minDist < 0.5) {
+        return { ...nearest, name: nearest.name + " (nearby)" };
+      }
+      return null;
+    }
+
+    function showZone(lat, lng) {
+      const zone = detectZone(lat, lng);
+
+      const nameEl = document.getElementById('zone-name');
+      const coordsEl = document.getElementById('zone-coords');
+      const banner = document.getElementById('zone-banner');
+
+      coordsEl.textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+
+      if (zone) {
+        nameEl.textContent = zone.name;
+        nameEl.className = 'zone-name';
+        nameEl.style.color = zone.color;
+        banner.classList.add('detected');
+      } else {
+        nameEl.textContent = 'Outside all zones';
+        nameEl.className = 'zone-name unknown';
+        nameEl.style.color = '';
+        banner.classList.remove('detected');
+      }
+
+      // Place / move marker
+      if (userMarker) {
+        userMarker.setLatLng([lat, lng]);
+      } else {
+        userMarker = L.circleMarker([lat, lng], {
+          radius: 8,
+          color: '#fff',
+          weight: 3,
+          fillColor: zone ? zone.color : '#e94560',
+          fillOpacity: 1,
+        }).addTo(map);
+      }
+      userMarker.setStyle({ fillColor: zone ? zone.color : '#e94560' });
+
+      // Hide instructions
+      const instr = document.getElementById('instructions');
+      if (instr) instr.style.display = 'none';
+    }
+
+    // ── Geolocation ─────────────────────────────────────────────────
+    function locateUser() {
+      const btn = document.getElementById('locate-btn');
+      btn.disabled = true;
+      btn.textContent = 'Locating…';
+
+      if (!navigator.geolocation) {
+        alert('Geolocation is not supported by your browser.');
+        btn.disabled = false;
+        btn.textContent = 'Find My Zone';
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const { latitude, longitude } = pos.coords;
+          map.setView([latitude, longitude], 16);
+          showZone(latitude, longitude);
+          btn.disabled = false;
+          btn.textContent = 'Find My Zone';
+        },
+        (err) => {
+          alert('Unable to get location: ' + err.message);
+          btn.disabled = false;
+          btn.textContent = 'Find My Zone';
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    }
+
+    // ── Map Click ───────────────────────────────────────────────────
+    map.on('click', (e) => {
+      showZone(e.latlng.lat, e.latlng.lng);
+    });
+  </script>
+</body>
+</html>
